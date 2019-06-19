@@ -1,6 +1,6 @@
 ---
 resources:
-- name: src
+- name: registry-data-git
   type: git
   source:
     uri: https://github.com/openregister/registry-data.git
@@ -8,7 +8,7 @@ resources:
     paths:
     - rsf/((register-name)).rsf
 
-- name: src-rs
+- name: route-service-git
   type: git
   source:
     uri: https://github.com/openregister/route-service.git
@@ -23,13 +23,19 @@ resources:
     username: ((paas-user))
     password: ((paas-password))
 
+- name: cf-cli
+  type: docker-image
+  source:
+    repository: governmentpaas/cf-cli
+    tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
+
 jobs:
-- name: build
+- name: deploy
   plan:
-  - get: src
+  - get: registry-data-git
     trigger: true
 
-  - task: build-paas-app
+  - task: build
     config:
       platform: linux
       image_resource:
@@ -38,63 +44,32 @@ jobs:
           repository: ((readonly_private_ecr_repo_url))
           tag: registers-cli
       inputs:
-      - name: src
+      - name: registry-data-git
       outputs:
       - name: build
-      params:
-        RSF_FILE: rsf/((register-name)).rsf
       run:
         path: registers
-        args: [ "build", "--target", "cloudfoundry", "src/rsf/((register-name)).rsf" ]
+        args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
-  - task: soft-store-build
+  - get: cf-cli
+
+  - task: create-space
+    image: cf-cli
     config:
       platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-      inputs:
-      - name: build
-      outputs:
-      - name: src
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          mv ./build ./src/
-
-- name: deploy
-  plan:
-  - get: src
-    trigger: true
-    passed: ["build"]
-  - get: src-rs
-    trigger: true
-
-  - task: setup-space
-    config:
-      platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-      params:
+      params: &cfparams
         USERNAME: ((paas-user))
         PASSWORD: ((paas-password))
         API: https://api.london.cloud.service.gov.uk
         ORGANIZATION: gds-registers
         SPACE: ((paas-space))
+        REGISTER: ((register-name))
       run:
         path: sh
         args:
         - -euc
         - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}"
-
+          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
           cf create-space "${SPACE}"
 
   - put: govuk-paas
@@ -104,64 +79,34 @@ jobs:
       path: build/((register-name))
       current_app_name: ((register-name))-app
 
+  - get: route-service-git
+    trigger: true
+
   - put: govuk-paas
     params:
-      manifest: src-rs/manifest.yml
+      manifest: route-service-git/manifest.yaml
       show_app_log: true
-      path: build/((register-name))
+      path: route-service-git
       current_app_name: ((register-name))-route-service
 
-  - task: create-cdn
+  - task: attach-domain
+    image: cf-cli
     config:
       platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
       params:
-        REGISTER: ((register-name))
-        USERNAME: ((paas-user))
-        PASSWORD: ((paas-password))
-        API: https://api.london.cloud.service.gov.uk
-        ORGANIZATION: gds-registers
-        SPACE: ((paas-space))
-        DATA_BLOB: '{"domain": "${REGISTER}.register.gov.uk,www.${REGISTER}.register.gov.uk"}'
+        <<: *cfparams
       run:
         path: sh
         args:
         - -euc
         - |
+          DATA_BLOB="{\"domain\": \"${REGISTER}.register.gov.uk,www.${REGISTER}.register.gov.uk\"}"
           cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
-
-          cf create-domain "${ORGANIZATION}" "${REGISTER}.register.gov.uk"
-
+          cf domains | grep -q "register.gov.uk" || cf create-domain "${ORGANIZATION}" "register.gov.uk"
           cf create-service cdn-route cdn-route "${REGISTER}-cdn" -c "${DATA_BLOB}" || cf update-service "${REGISTER}-cdn" -c "${DATA_BLOB}"
-
+          echo "======================================"
           cf service "${REGISTER}-cdn"
-
-  - task: bind-routing
-    config:
-      platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-      params:
-        REGISTER: ((register-name))
-        USERNAME: ((paas-user))
-        PASSWORD: ((paas-password))
-        API: https://api.london.cloud.service.gov.uk
-        ORGANIZATION: gds-registers
-        SPACE: ((paas-space))
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
-
-          cf create-user-provided-service "${REGISTER}-binding" -r "${REGISTER}-route-service.cloudapps.digital"
-
-          cf bind-route-service "${REGISTER}.register.gov.uk" "${REGISTER}-binding" --hostname "${REGISTER}-app"
+          echo "======================================"
+          cf service "${REGISTER}-binding" || cf create-user-provided-service "${REGISTER}-binding" -r "https://${REGISTER}-route-service.london.cloudapps.digital"
+          echo "FIXME: this is invalid domain, need to make it good"
+          cf bind-route-service "london.cloudapps.digital" "${REGISTER}-binding" --hostname "${REGISTER}-app"
