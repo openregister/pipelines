@@ -35,8 +35,8 @@ jobs:
       image_resource:
         type: docker-image
         source:
-          repository: openregister/cli
-          tag: 0.0.1560935678
+          repository: ((readonly_private_ecr_repo_url))
+          tag: registers-cli
       inputs:
       - name: src
       outputs:
