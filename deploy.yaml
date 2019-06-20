@@ -12,7 +12,7 @@ resources:
   type: git
   source:
     uri: https://github.com/openregister/route-service.git
-    branch: develop # FIXME
+    branch: master
 
 - name: app-paas
   type: cf
@@ -94,6 +94,21 @@ jobs:
         - |
           cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
           cf create-space "${SPACE}"
+
+  - task: run-tests
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: golang
+          tag: 1.12-stretch
+      inputs:
+        - name: route-service-git
+      run:
+        dir: route-service-git
+        path: go
+        args: [ "test", "./..." ]
 
   - put: route-service-paas
     params:
