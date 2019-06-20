@@ -1,0 +1,60 @@
+---
+resource_types:
+- name: concourse-pipeline
+  type: docker-image
+  source: { repository: concourse/concourse-pipeline-resource }
+
+resources:
+- name: registry-data-git
+  type: git
+  source:
+    uri: https://github.com/openregister/registry-data.git
+    branch: master
+    paths:
+    - "rsf/*.rsf"
+
+- name: pipelines-git
+  type: git
+  source:
+    uri: https://github.com/openregister/pipelines.git
+    branch: master
+
+- name: deploy-pipelines
+  type: concourse-pipeline
+  source:
+    teams:
+      - name: register
+        username: register
+        password: ((readonly_local_user_password))
+
+jobs:
+- name: update-pipelines
+  plan:
+  - get: registry-data-git
+    trigger: true
+
+  - get: pipelines-git
+    trigger: true
+
+  - task: set-pipelines
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: { repository: ruby }
+      inputs:
+        - name: registry-data-git
+        - name: pipelines-git
+      outputs:
+        - name: pipelines-config
+      params:
+        REGISTRY_DATA: registry-data-git/rsf/*.rsf
+        OUTPUT: pipelines-config/config.yaml
+        DEPLOY_CONFIG_FILE: pipelines-git/deploy.yaml
+        UNPAUSED: false
+      run:
+        path: pipelines-git/generate_pipelines.rb
+
+  - put: deploy-pipelines
+    params:
+      pipelines_file: pipelines-config/config.yaml
