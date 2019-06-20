@@ -14,17 +14,62 @@ resources:
     uri: https://github.com/openregister/route-service.git
     branch: develop # FIXME
 
-- name: govuk-paas
+- name: app-paas
   type: cf
-  source:
+  source: &cf-source
     api: https://api.london.cloud.service.gov.uk
     organization: gds-registers
     space: ((paas-space))
     username: ((paas-user))
     password: ((paas-password))
 
+- name: route-service-paas
+  type: cf
+  source: *cf-source
+
 jobs:
-- name: deploy-rs
+- name: deploy-app
+  plan:
+  - get: registry-data-git
+    trigger: true
+
+  - task: build
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: ((readonly_private_ecr_repo_url))
+          tag: registers-cli
+      inputs:
+      - name: registry-data-git
+      outputs:
+      - name: build
+      run:
+        path: registers
+        args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
+
+  - task: create-space
+    config:
+      platform: linux
+      image_resource: *cf-image
+      params: *cfparams
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
+          cf create-space "${SPACE}"
+
+  - put: app-paas
+    params:
+      manifest: build/((register-name))/manifest.yml
+      show_app_log: true
+      path: build/((register-name))
+      current_app_name: ((register-name))-app
+
+- name: deploy-route-service
   plan:
   - get: route-service-git
     trigger: true
@@ -52,72 +97,27 @@ jobs:
           cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
           cf create-space "${SPACE}"
 
-  - put: govuk-paas
+  - put: route-service-paas
     params:
       manifest: route-service-git/manifest.yaml
       show_app_log: true
       path: route-service-git
       current_app_name: ((register-name))-route-service
 
-- name: deploy
+- name: attach-route
   plan:
-  - get: registry-data-git
+  - get: app-paas
+    passed: ["deploy-app"]
+
+  - get: route-service-paas
     trigger: true
-
-  - task: build
-    config:
-      platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: ((readonly_private_ecr_repo_url))
-          tag: registers-cli
-      inputs:
-      - name: registry-data-git
-      outputs:
-      - name: build
-      run:
-        path: registers
-        args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
-
-  - task: create-space
-    config:
-      platform: linux
-      image_resource: *cf-image
-      params: &cfparams
-        USERNAME: ((paas-user))
-        PASSWORD: ((paas-password))
-        API: https://api.london.cloud.service.gov.uk
-        ORGANIZATION: gds-registers
-        SPACE: ((paas-space))
-        REGISTER: ((register-name))
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
-          cf create-space "${SPACE}"
-
-  - put: govuk-paas
-    params:
-      manifest: build/((register-name))/manifest.yml
-      show_app_log: true
-      path: build/((register-name))
-      current_app_name: ((register-name))-app
-
-- name: attach
-  plan:
-  - get: govuk-paas
-    trigger: true
-    passed: ["deploy", "deploy-rs"]
+    passed: ["deploy-route-service"]
 
   - task: attach-domain
     config:
       platform: linux
       image_resource: *cf-image
-      params:
-        <<: *cfparams
+      params: *cfparams
       run:
         path: sh
         args:
