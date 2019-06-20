@@ -23,13 +23,42 @@ resources:
     username: ((paas-user))
     password: ((paas-password))
 
-- name: cf-cli
-  type: docker-image
-  source:
-    repository: governmentpaas/cf-cli
-    tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-
 jobs:
+- name: deploy-rs
+  plan:
+  - get: route-service-git
+    trigger: true
+
+  - task: create-space
+    config:
+      platform: linux
+      image_resource: &cf-image
+        type: docker-image
+        source:
+          repository: governmentpaas/cf-cli
+          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
+      params: &cfparams
+        USERNAME: ((paas-user))
+        PASSWORD: ((paas-password))
+        API: https://api.london.cloud.service.gov.uk
+        ORGANIZATION: gds-registers
+        SPACE: ((paas-space))
+        REGISTER: ((register-name))
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
+          cf create-space "${SPACE}"
+
+  - put: govuk-paas
+    params:
+      manifest: route-service-git/manifest.yaml
+      show_app_log: true
+      path: route-service-git
+      current_app_name: ((register-name))-route-service
+
 - name: deploy
   plan:
   - get: registry-data-git
@@ -51,12 +80,10 @@ jobs:
         path: registers
         args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
-  - get: cf-cli
-
   - task: create-space
-    image: cf-cli
     config:
       platform: linux
+      image_resource: *cf-image
       params: &cfparams
         USERNAME: ((paas-user))
         PASSWORD: ((paas-password))
@@ -79,20 +106,16 @@ jobs:
       path: build/((register-name))
       current_app_name: ((register-name))-app
 
-  - get: route-service-git
+- name: attach
+  plan:
+  - get: govuk-paas
     trigger: true
-
-  - put: govuk-paas
-    params:
-      manifest: route-service-git/manifest.yaml
-      show_app_log: true
-      path: route-service-git
-      current_app_name: ((register-name))-route-service
+    passed: ["deploy", "deploy-rs"]
 
   - task: attach-domain
-    image: cf-cli
     config:
       platform: linux
+      image_resource: *cf-image
       params:
         <<: *cfparams
       run:
