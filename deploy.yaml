@@ -50,10 +50,20 @@ jobs:
         args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
   - task: create-space
-    config:
+    config: &cf-task
       platform: linux
-      image_resource: *cf-image
-      params: *cfparams
+      image_resource:
+        type: docker-image
+        source:
+          repository: governmentpaas/cf-cli
+          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
+      params:
+        USERNAME: ((paas-user))
+        PASSWORD: ((paas-password))
+        API: https://api.london.cloud.service.gov.uk
+        ORGANIZATION: gds-registers
+        SPACE: ((paas-space))
+        REGISTER: ((register-name))
       run:
         path: sh
         args:
@@ -76,19 +86,7 @@ jobs:
 
   - task: create-space
     config:
-      platform: linux
-      image_resource: &cf-image
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-      params: &cfparams
-        USERNAME: ((paas-user))
-        PASSWORD: ((paas-password))
-        API: https://api.london.cloud.service.gov.uk
-        ORGANIZATION: gds-registers
-        SPACE: ((paas-space))
-        REGISTER: ((register-name))
+      <<: *cf-task
       run:
         path: sh
         args:
@@ -116,9 +114,7 @@ jobs:
 
   - task: attach-domain
     config:
-      platform: linux
-      image_resource: *cf-image
-      params: *cfparams
+      <<: *cf-task
       run:
         path: sh
         args:
