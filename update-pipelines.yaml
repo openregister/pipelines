@@ -1,82 +1,60 @@
 ---
+resource_types:
+- name: concourse-pipeline
+  type: docker-image
+  source: { repository: concourse/concourse-pipeline-resource }
+
 resources:
-- name: src
+- name: registry-data-git
   type: git
   source:
     uri: https://github.com/openregister/registry-data.git
     branch: master
     paths:
     - "rsf/*.rsf"
-- name: pipelines
+
+- name: pipelines-git
   type: git
   source:
     uri: https://github.com/openregister/pipelines.git
     branch: master
 
+- name: deploy-pipelines
+  type: concourse-pipeline
+  source:
+    teams:
+      - name: register
+        username: register
+        password: ((readonly_local_user_password))
+
 jobs:
 - name: update-pipelines
   plan:
-  - get: src
+  - get: registry-data-git
     trigger: true
-  - get: pipelines
+
+  - get: pipelines-git
     trigger: true
+
   - task: set-pipelines
     config:
       platform: linux
       image_resource:
         type: docker-image
-        source:
-          repository: governmentpaas/curl-ssl
+        source: { repository: ruby }
       inputs:
-        - name: src
-        - name: pipelines
+        - name: registry-data-git
+        - name: pipelines-git
+      outputs:
+        - name: pipelines-config
       params:
-        CONCOURSE_TEAM: register
-        CONCOURSE_PASSWORD: ((readonly_local_user_password))
+        REGISTRY_DATA: registry-data-git/rsf/*.rsf
+        OUTPUT: pipelines-config/config.yaml
+        DEPLOY_CONFIG_FILE: pipelines-git/deploy.yaml
+        UNPAUSED: false
       run:
-        path: sh
-        args:
-        - -uec
-        - |
-          : ${CONCOURSE_TEAM:?}
-          : ${CONCOURSE_PASSWORD:?}
-          CONCOURSE_USERNAME="${CONCOURSE_USERNAME:-$CONCOURSE_TEAM}"
-          CONCOURSE_URL="${CONCOURSE_URL:-https://cd.gds-reliability.engineering}"
+        path: pipelines-git/generate_pipelines.rb
 
-          > fly \
-            curl -L --fail \
-            "${CONCOURSE_URL}/api/v1/cli?arch=amd64&platform=linux"
-          
-          chmod +x fly
-
-          echo "=====> Authenticating into concourse"
-          ./fly --target self \
-            login \
-            --concourse-url "${CONCOURSE_URL}" \
-            --username "${CONCOURSE_USERNAME}" \
-            --password "${CONCOURSE_PASSWORD}" \
-            --team-name "${CONCOURSE_TEAM}"
-
-          for REGISTER_FILE in ./src/rsf/*.rsf; do
-            REGISTER=$(basename ${REGISTER_FILE} .rsf)
-            echo "=====> Dealing with register '${REGISTER}'"
-
-            echo "Validating the pipeline"
-            ./fly --target self \
-              validate-pipeline \
-              --var "register-name=${REGISTER}" \
-              --var "paas-space=${REGISTER}" \
-              --config ./pipelines/deploy.yaml
-
-            echo "Updating Concourse pipeline"
-            ./fly --target self \
-              set-pipeline \
-              --check-creds \
-              --pipeline "${PIPELINE_NAME}" \
-              --config ./pipelines/deploy.yaml \
-              --var "register-name=${REGISTER}" \
-              --var "paas-space=${REGISTER}" \
-              --non-interactive
-          done
-
-          echo "=====> All done!"
+  - put: deploy-pipelines
+    params:
+      pipelines_file: pipelines-config/config.yaml

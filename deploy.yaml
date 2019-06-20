@@ -107,6 +107,7 @@ jobs:
 - name: attach-route
   plan:
   - get: app-paas
+    trigger: true
     passed: ["deploy-app"]
 
   - get: route-service-paas
