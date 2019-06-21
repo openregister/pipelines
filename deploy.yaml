@@ -77,7 +77,7 @@ jobs:
       manifest: build/((register-name))/manifest.yml
       show_app_log: true
       path: build/((register-name))
-      current_app_name: ((register-name))-app
+      current_app_name: ((register-name))-register
 
 - name: deploy-route-service
   plan:
@@ -144,4 +144,4 @@ jobs:
           echo "======================================"
           cf service "${REGISTER}-binding" || cf create-user-provided-service "${REGISTER}-binding" -r "https://${REGISTER}-route-service.london.cloudapps.digital"
           echo "FIXME: this is invalid domain, need to make it good"
-          cf bind-route-service "london.cloudapps.digital" "${REGISTER}-binding" --hostname "${REGISTER}-app"
+          cf bind-route-service "london.cloudapps.digital" "${REGISTER}-binding" --hostname "${REGISTER}-register"
