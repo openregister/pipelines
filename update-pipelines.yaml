@@ -51,10 +51,17 @@ jobs:
         REGISTRY_DATA: registry-data-git/rsf/*.rsf
         OUTPUT: pipelines-config/config.yaml
         DEPLOY_CONFIG_FILE: pipelines-git/deploy.yaml
-        UNPAUSED: false
+        UNPAUSED: true
       run:
         path: pipelines-git/generate_pipelines.rb
 
   - put: deploy-pipelines
     params:
       pipelines_file: pipelines-config/config.yaml
+
+  - put: deploy-pipelines
+    params:
+      pipelines:
+        - name: update-pipelines
+          config_file: pipelines-git/update-pipelines.yaml
+          team: register
