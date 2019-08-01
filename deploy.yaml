@@ -79,6 +79,17 @@ jobs:
       path: build/((register-name))
       current_app_name: ((register-name))-app
 
+  - task: scale-app
+    config:
+      <<: *cf-task
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
+          cf scale ((register-name))-app -f -m 64M
+
 - name: deploy-route-service
   plan:
   - get: route-service-git
