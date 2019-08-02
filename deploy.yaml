@@ -1,4 +1,11 @@
 ---
+resource_types:
+- name: cf-cli-resource
+  type: docker-image
+  source:
+    repository: nulldriver/cf-cli-resource
+    tag: latest
+
 resources:
 - name: registry-data-git
   type: git
@@ -14,21 +21,13 @@ resources:
     uri: https://github.com/openregister/route-service.git
     branch: master
 
-templates:
-  config: &cf-task
-    platform: linux
-    image_resource:
-      type: docker-image
-      source:
-        repository: governmentpaas/cf-cli
-        tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-    params:
-      USERNAME: ((paas-user))
-      PASSWORD: ((paas-password))
-      API: https://api.london.cloud.service.gov.uk
-      ORGANIZATION: gds-registers
-      SPACE: ((paas-space))
-      REGISTER: ((register-name))
+- name: cf-paas
+  type: cf-cli-resource
+  source:
+    api: https://api.london.cloud.service.gov.uk
+    org: gds-registers
+    username: ((paas-user))
+    password: ((paas-password))
 
 jobs:
 - name: deploy-app
@@ -52,20 +51,21 @@ jobs:
         path: registers
         args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
-  - task: push-app
-    config:
-      <<: *cf-task
-      inputs:
-        - name: build
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
-          cf create-space "${SPACE}"
-          cf target -s "${SPACE}"
-          cf push app -f "build/${REGISTER}/manifest.yml" -p "build/${REGISTER}" --no-route
+  - put: paas-space
+    resource: cf-paas
+    params:
+      command: create-space
+      space: ((register-name))
+
+  - put: paas-app
+    resource: cf-paas
+    params:
+      command: push
+      space: ((register-name))
+      app_name: app
+      hostname: ((register-name))-app
+      manifest: build/((register-name))/manifest.yml
+      path: build/((register-name))
 
 - name: deploy-route-service
   plan:
@@ -87,31 +87,38 @@ jobs:
         path: go
         args: [ "test", "./..." ]
 
-  - task: deploy-route-service
-    config:
-      <<: *cf-task
-      inputs:
-        - name: route-service-git
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
-          cf create-space "${SPACE}"
-          cf target -s "${SPACE}"
-          cf push route-service -f route-service-git/manifest.yaml -p route-service-git --no-route
+  - put: paas-space
+    resource: cf-paas
+    params:
+      command: create-space
+      space: ((register-name))
 
-  - task: attach-domain
-    config:
-      <<: *cf-task
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
-          cf map-route app london.cloudapps.digital --hostname "${REGISTER}-app"
-          cf map-route route-service london.cloudapps.digital --hostname "${REGISTER}-rs"
-          cf service route-service-binding || cf create-user-provided-service route-service-binding -r "https://${REGISTER}-rs.london.cloudapps.digital"
-          cf bind-route-service london.cloudapps.digital route-service-binding --hostname "${REGISTER}-app"
+  - put: paas-route-service
+    resource: cf-paas
+    params:
+      command: push
+      space: ((register-name))
+      app_name: route-service
+      hostname: ((register-name))-rs
+      manifest: route-service-git/manifest.yaml
+      path: route-service-git
+
+- name: attach-domain
+  plan:
+  - get: cf-paas
+    passed: [ deploy-app, deploy-route-service ]
+    trigger: true
+
+  - put: bind-route-service
+    resource: cf-paas
+    params:
+      commands:
+      - command: create-user-provided-service
+        space: ((register-name))
+        service_instance: route-service-binding
+        route_service_url: https://((register-name))-rs.london.cloudapps.digital
+      - command: bind-route-service
+        space: ((register-name))
+        service_instance: route-service-binding
+        domain: london.cloudapps.digital
+        hostname: ((register-name))-app
