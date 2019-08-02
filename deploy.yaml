@@ -14,18 +14,21 @@ resources:
     uri: https://github.com/openregister/route-service.git
     branch: master
 
-- name: app-paas
-  type: cf
-  source: &cf-source
-    api: https://api.london.cloud.service.gov.uk
-    organization: gds-registers
-    space: ((paas-space))
-    username: ((paas-user))
-    password: ((paas-password))
-
-- name: route-service-paas
-  type: cf
-  source: *cf-source
+templates:
+  config: &cf-task
+    platform: linux
+    image_resource:
+      type: docker-image
+      source:
+        repository: governmentpaas/cf-cli
+        tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
+    params:
+      USERNAME: ((paas-user))
+      PASSWORD: ((paas-password))
+      API: https://api.london.cloud.service.gov.uk
+      ORGANIZATION: gds-registers
+      SPACE: ((paas-space))
+      REGISTER: ((register-name))
 
 jobs:
 - name: deploy-app
@@ -33,7 +36,7 @@ jobs:
   - get: registry-data-git
     trigger: true
 
-  - task: build
+  - task: build-register
     config:
       platform: linux
       image_resource:
@@ -49,21 +52,11 @@ jobs:
         path: registers
         args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
-  - task: create-space
-    config: &cf-task
-      platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: governmentpaas/cf-cli
-          tag: "21e5ddc4c7265b112cbeb0993b0915fa9366a876"
-      params:
-        USERNAME: ((paas-user))
-        PASSWORD: ((paas-password))
-        API: https://api.london.cloud.service.gov.uk
-        ORGANIZATION: gds-registers
-        SPACE: ((paas-space))
-        REGISTER: ((register-name))
+  - task: push-app
+    config:
+      <<: *cf-task
+      inputs:
+        - name: build
       run:
         path: sh
         args:
@@ -71,40 +64,13 @@ jobs:
         - |
           cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
           cf create-space "${SPACE}"
-
-  - put: app-paas
-    params:
-      manifest: build/((register-name))/manifest.yml
-      show_app_log: true
-      path: build/((register-name))
-      current_app_name: ((register-name))-app
-
-  - task: scale-app
-    config:
-      <<: *cf-task
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
-          cf scale ((register-name))-app -f -m 64M
+          cf target -s "${SPACE}"
+          cf push app -f "build/${REGISTER}/manifest.yml" -p "build/${REGISTER}" --no-route
 
 - name: deploy-route-service
   plan:
   - get: route-service-git
     trigger: true
-
-  - task: create-space
-    config:
-      <<: *cf-task
-      run:
-        path: sh
-        args:
-        - -euc
-        - |
-          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
-          cf create-space "${SPACE}"
 
   - task: run-tests
     config:
@@ -121,22 +87,20 @@ jobs:
         path: go
         args: [ "test", "./..." ]
 
-  - put: route-service-paas
-    params:
-      manifest: route-service-git/manifest.yaml
-      show_app_log: true
-      path: route-service-git
-      current_app_name: ((register-name))-route-service
-
-- name: attach-route
-  plan:
-  - get: app-paas
-    trigger: true
-    passed: ["deploy-app"]
-
-  - get: route-service-paas
-    trigger: true
-    passed: ["deploy-route-service"]
+  - task: deploy-route-service
+    config:
+      <<: *cf-task
+      inputs:
+        - name: route-service-git
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s sandbox
+          cf create-space "${SPACE}"
+          cf target -s "${SPACE}"
+          cf push route-service -f route-service-git/manifest.yaml -p route-service-git --no-route
 
   - task: attach-domain
     config:
@@ -146,13 +110,8 @@ jobs:
         args:
         - -euc
         - |
-          DATA_BLOB="{\"domain\": \"${REGISTER}.register.gov.uk,www.${REGISTER}.register.gov.uk\"}"
           cf login -a "${API}" -u "${USERNAME}" -p "${PASSWORD}" -o "${ORGANIZATION}" -s "${SPACE}"
-          cf domains | grep -q "register.gov.uk" || cf create-domain "${ORGANIZATION}" "register.gov.uk"
-          cf create-service cdn-route cdn-route "${REGISTER}-cdn" -c "${DATA_BLOB}" || cf update-service "${REGISTER}-cdn" -c "${DATA_BLOB}"
-          echo "======================================"
-          cf service "${REGISTER}-cdn"
-          echo "======================================"
-          cf service "${REGISTER}-binding" || cf create-user-provided-service "${REGISTER}-binding" -r "https://${REGISTER}-route-service.london.cloudapps.digital"
-          echo "FIXME: this is invalid domain, need to make it good"
-          cf bind-route-service "london.cloudapps.digital" "${REGISTER}-binding" --hostname "${REGISTER}-app"
+          cf map-route app london.cloudapps.digital --hostname "${REGISTER}-app"
+          cf map-route route-service london.cloudapps.digital --hostname "${REGISTER}-rs"
+          cf service route-service-binding || cf create-user-provided-service route-service-binding -r "https://${REGISTER}-rs.london.cloudapps.digital"
+          cf bind-route-service london.cloudapps.digital route-service-binding --hostname "${REGISTER}-app"
