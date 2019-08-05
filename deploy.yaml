@@ -21,6 +21,12 @@ resources:
     uri: https://github.com/openregister/route-service.git
     branch: master
 
+- name: conformance-test-git
+  type: git
+  source:
+    uri: https://github.com/openregister/conformance-test.git
+    branch: master
+
 - name: cf-paas
   type: cf-cli-resource
   source:
@@ -122,3 +128,32 @@ jobs:
         service_instance: route-service-binding
         domain: london.cloudapps.digital
         hostname: ((register-name))-app
+
+- name: conformance-test
+  plan:
+    - get: cf-paas
+      passed: [ attach-domain ]
+      trigger: true
+    - get: conformance-test-git
+    - task: run-test
+      config:
+        platform: linux
+        image_resource:
+          type: docker-image
+          source:
+            repository: python
+            tag: 3-alpine
+        inputs:
+          - name: conformance-test-git
+        params:
+          REGISTER: ((register-name))
+          DOMAIN: london.cloudapps.digital
+        run:
+          path: ash
+          dir: conformance-test-git
+          args:
+            - -c
+            - |
+              set -o errexit -o pipefail
+              pip install -r requirements.txt
+              ./openregister-conformance --api-version 1 --register "$REGISTER" --register-domain "$DOMAIN" "https://${REGISTER}-app.${DOMAIN}"
