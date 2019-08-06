@@ -21,11 +21,17 @@ resources:
     uri: https://github.com/openregister/route-service.git
     branch: master
 
-- name: conformance-test-git
-  type: git
+- name: registers-cli-image
+  type: docker-image
   source:
-    uri: https://github.com/openregister/conformance-test.git
-    branch: master
+    repository: ((readonly_private_ecr_repo_url))
+    tag: registers-cli
+
+- name: conformance-test-image
+  type: docker-image
+  source:
+    repository: ((readonly_private_ecr_repo_url))
+    tag: conformance-test
 
 - name: cf-paas
   type: cf-cli-resource
@@ -41,14 +47,13 @@ jobs:
   - get: registry-data-git
     trigger: true
 
+  - get: registers-cli-image
+    trigger: true
+
   - task: build-register
+    image: registers-cli-image
     config:
       platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: ((readonly_private_ecr_repo_url))
-          tag: registers-cli
       inputs:
       - name: registry-data-git
       outputs:
@@ -134,26 +139,12 @@ jobs:
     - get: cf-paas
       passed: [ attach-domain ]
       trigger: true
-    - get: conformance-test-git
+    - get: conformance-test-image
+      trigger: true
     - task: run-test
+      image: conformance-test-image
       config:
         platform: linux
-        image_resource:
-          type: docker-image
-          source:
-            repository: python
-            tag: 3-alpine
-        inputs:
-          - name: conformance-test-git
-        params:
-          REGISTER: ((register-name))
-          DOMAIN: london.cloudapps.digital
         run:
-          path: ash
-          dir: conformance-test-git
-          args:
-            - -c
-            - |
-              set -o errexit -o pipefail
-              pip install -r requirements.txt
-              ./openregister-conformance --api-version 1 --register "$REGISTER" --register-domain "$DOMAIN" "https://${REGISTER}-app.${DOMAIN}"
+          path: /app/openregister-conformance
+          args: [ "--api-version", "1", "--register", "((register-name))", "--register-domain", "((domain))", "https://((register-name))-app.((domain))" ]

@@ -28,7 +28,7 @@ resources:
         password: ((readonly_local_user_password))
 
 jobs:
-- name: update-pipelines
+- name: update-deploy-pipelines
   plan:
   - get: registry-data-git
     trigger: true
@@ -52,6 +52,7 @@ jobs:
         OUTPUT: pipelines-config/config.yaml
         DEPLOY_CONFIG_FILE: pipelines-git/deploy.yaml
         UNPAUSED: false
+        DOMAIN: london.cloudapps.digital
       run:
         path: pipelines-git/generate_pipelines.rb
 
@@ -59,9 +60,25 @@ jobs:
     params:
       pipelines_file: pipelines-config/config.yaml
 
+- name: update-other-pipelines
+  plan:
+  - get: pipelines-git
+    trigger: true
   - put: deploy-pipelines
     params:
       pipelines:
         - name: update-pipelines
           config_file: pipelines-git/update-pipelines.yaml
+          team: register
+  - put: deploy-pipelines
+    params:
+      pipelines:
+        - name: build-cli
+          config_file: pipelines-git/build-cli.yaml
+          team: register
+  - put: deploy-pipelines
+    params:
+      pipelines:
+        - name: build-tests
+          config_file: pipelines-git/build-tests.yaml
           team: register
