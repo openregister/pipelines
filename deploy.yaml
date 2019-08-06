@@ -23,12 +23,14 @@ resources:
 
 - name: registers-cli-image
   type: docker-image
+  check_every: 5m
   source:
     repository: ((readonly_private_ecr_repo_url))
     tag: registers-cli
 
 - name: conformance-test-image
   type: docker-image
+  check_every: 5m
   source:
     repository: ((readonly_private_ecr_repo_url))
     tag: conformance-test
@@ -36,6 +38,7 @@ resources:
 - &cf-paas
   name: cf-paas-app
   type: cf-cli-resource
+  check_every: 5m
   source:
     api: https://api.london.cloud.service.gov.uk
     org: gds-registers
