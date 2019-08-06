@@ -9,7 +9,7 @@ pipelines = Dir.glob(ENV.fetch('REGISTRY_DATA')).map do |path|
     'team' => 'register',
     'config_file' => ENV.fetch('DEPLOY_CONFIG_FILE'),
     'unpaused' => ENV.fetch('UNPAUSED') == 'true',
-    'vars' => { 'register-name' => register, 'paas-space' => register }
+    'vars' => { 'register-name' => register, 'paas-space' => register, 'domain' => ENV.fetch('DOMAIN') }
   }
 end
 
