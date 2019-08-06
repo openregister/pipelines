@@ -33,13 +33,20 @@ resources:
     repository: ((readonly_private_ecr_repo_url))
     tag: conformance-test
 
-- name: cf-paas
+- &cf-paas
+  name: cf-paas-app
   type: cf-cli-resource
   source:
     api: https://api.london.cloud.service.gov.uk
     org: gds-registers
     username: ((paas-user))
     password: ((paas-password))
+
+- <<: *cf-paas
+  name: cf-paas-rs
+
+- <<: *cf-paas
+  name: cf-paas-domain
 
 jobs:
 - name: deploy-app
@@ -63,13 +70,13 @@ jobs:
         args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
 
   - put: paas-space
-    resource: cf-paas
+    resource: cf-paas-app
     params:
       command: create-space
       space: ((register-name))
 
   - put: paas-app
-    resource: cf-paas
+    resource: cf-paas-app
     params:
       command: push
       space: ((register-name))
@@ -99,13 +106,13 @@ jobs:
         args: [ "test", "./..." ]
 
   - put: paas-space
-    resource: cf-paas
+    resource: cf-paas-rs
     params:
       command: create-space
       space: ((register-name))
 
   - put: paas-route-service
-    resource: cf-paas
+    resource: cf-paas-rs
     params:
       command: push
       space: ((register-name))
@@ -116,12 +123,16 @@ jobs:
 
 - name: attach-domain
   plan:
-  - get: cf-paas
-    passed: [ deploy-app, deploy-route-service ]
+  - get: cf-paas-app
+    passed: [ deploy-app ]
+    trigger: true
+
+  - get: cf-paas-rs
+    passed: [ deploy-route-service ]
     trigger: true
 
   - put: bind-route-service
-    resource: cf-paas
+    resource: cf-paas-domain
     params:
       commands:
       - command: create-user-provided-service
@@ -136,7 +147,7 @@ jobs:
 
 - name: conformance-test
   plan:
-    - get: cf-paas
+    - get: cf-paas-domain
       passed: [ attach-domain ]
       trigger: true
     - get: conformance-test-image
