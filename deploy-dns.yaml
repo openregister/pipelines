@@ -1,0 +1,84 @@
+---
+resource_types:
+- name: concourse-pipeline
+  type: docker-image
+  source:
+    repository: concourse/concourse-pipeline-resource
+
+resources:
+- name: tech-ops-private
+  type: git
+  source:
+    uri: git@github.com:alphagov/tech-ops-private.git
+    branch: master
+    private_key: |
+      ((gds-tech-ops-deploy-key))
+    paths:
+    - reliability-engineering/terraform/deployments/re-registers/dns
+
+- name: pipelines
+  type: git
+  source:
+    uri: https://github.com/openregister/pipelines.git
+    branch: master
+
+- name: cd
+  type: concourse-pipeline
+  source:
+    teams:
+      - name: register
+        username: register
+        password: ((readonly_local_user_password))
+
+jobs:
+- name: update
+  plan:
+    - get: pipelines
+      trigger: true
+    - put: cd
+      params:
+        pipelines:
+          - name: deploy-dns
+            team: register
+            config_file: pipelines/deploy-dns.yaml
+
+- name: deploy-dns
+  plan:
+  - get: tech-ops-private
+    trigger: true
+  - task: apply-terraform
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: gdsre/aws-terraform
+          tag: 18.04-0.11.13
+      inputs:
+      - name: tech-ops-private
+      run:
+        path: sh
+        args:
+          - -c
+          - |
+            set -ue
+            echo "Authenticating with AWS as dns-deployer role"
+            arn="arn:aws:iam::022990953738:role/dns-deployer"
+            creds="$(aws \
+                     sts assume-role \
+                     --role-arn="$arn" \
+                     --role-session-name="deploy-dns-concourse-$(date +%s)" \
+                     --duration 1800 \
+            )"
+            access_key="$(echo "$creds"    | jq -r ".Credentials.AccessKeyId")"
+            secret_key="$(echo "$creds"    | jq -r ".Credentials.SecretAccessKey")"
+            session_token="$(echo "$creds" | jq -r ".Credentials.SessionToken")"
+            export "AWS_ACCESS_KEY_ID=$access_key"
+            export "AWS_SECRET_ACCESS_KEY=$secret_key"
+            export "AWS_SESSION_TOKEN=$session_token"
+            export "AWS_DEFAULT_REGION=eu-west-2"
+            aws sts get-caller-identity
+
+            cd tech-ops-private/reliability-engineering/terraform/deployments/re-registers/dns
+            terraform init
+            terraform apply --auto-approve
