@@ -1,164 +1,252 @@
 ---
 resource_types:
-- name: cf-cli-resource
+- name: s3-paas
   type: docker-image
   source:
-    repository: nulldriver/cf-cli-resource
-    tag: latest
+    repository: governmentpaas/s3-resource
+- name: concourse-pipeline
+  type: docker-image
+  source:
+    repository: concourse/concourse-pipeline-resource
 
 resources:
-- name: registry-data-git
+- name: registers-cli
+  type: git
+  source:
+    uri: https://github.com/openregister/registers-cli.git
+    branch: master
+
+- name: registry-data
   type: git
   source:
     uri: https://github.com/openregister/registry-data.git
     branch: master
     paths:
-    - rsf/((register-name)).rsf
+    - rsf
 
-- name: route-service-git
+- name: conformance-test
+  type: git
+  source:
+    uri: https://github.com/openregister/conformance-test.git
+    branch: master
+
+- name: pipelines
+  type: git
+  source:
+    uri: https://github.com/openregister/pipelines.git
+    branch: master
+
+- name: route-service
   type: git
   source:
     uri: https://github.com/openregister/route-service.git
     branch: master
 
-- name: registers-cli-image
-  type: docker-image
-  check_every: 5m
+- name: registers
+  type: s3-paas
   source:
-    repository: ((readonly_private_ecr_repo_url))
-    tag: registers-cli
+    bucket: ((readonly_private_bucket_name))
+    regexp: registers/(.*).tgz
+    initial_path: registers/0.tgz
+    region_name: eu-west-2
 
-- name: conformance-test-image
-  type: docker-image
-  check_every: 5m
-  source:
-    repository: ((readonly_private_ecr_repo_url))
-    tag: conformance-test
-
-- &cf-paas
-  name: cf-paas-app
-  type: cf-cli-resource
-  check_every: 5m
+- &cf-resource
+  name: paas-app
+  type: cf
   source:
     api: https://api.london.cloud.service.gov.uk
-    org: gds-registers
+    organization: gds-registers
+    space: registers
     username: ((paas-user))
     password: ((paas-password))
 
-- <<: *cf-paas
-  name: cf-paas-rs
+- <<: *cf-resource
+  name: paas-route-service
 
-- <<: *cf-paas
-  name: cf-paas-domain
+- name: cd
+  type: concourse-pipeline
+  source:
+    teams:
+      - name: register
+        username: register
+        password: ((readonly_local_user_password))
+
+images:
+  python: &python-image
+    type: docker-image
+    source:
+      repository: python
+      tag: 3-slim
+  ruby: &ruby-image
+    type: docker-image
+    source: 
+      repository: ruby
+      tag: slim
+  go: &go-image
+    type: docker-image
+    source:
+      repository: golang
+      tag: 1.12-stretch
+  go: &cf-image
+    type: docker-image
+    source:
+      repository: governmentpaas/cf-cli
 
 jobs:
-- name: deploy-app
+- name: update
   plan:
-  - get: registry-data-git
-    trigger: true
+    - get: pipelines
+      trigger: true
+    - put: cd
+      params:
+        pipelines:
+          - name: deploy
+            team: register
+            config_file: pipelines/deploy.yaml
 
-  - get: registers-cli-image
+- name: build
+  plan:
+  - get: registers-cli
     trigger: true
-
-  - task: build-register
-    image: registers-cli-image
+  - get: registry-data
+    trigger: true
+  - task: build-registers
     config:
       platform: linux
+      image_resource: *python-image
       inputs:
-      - name: registry-data-git
+        - name: registers-cli
+        - name: registry-data
       outputs:
-      - name: build
+        - name: archive
       run:
-        path: registers
-        args: [ "build", "--target", "cloudfoundry", "registry-data-git/rsf/((register-name)).rsf" ]
+        path: sh
+        dir: registers-cli
+        args:
+          - -uec
+          - |
+            pip install .
+            mkdir -p output
+            # compile all registers
+            registers build ../registry-data/rsf/*.rsf
+            # save canonical list of current registers
+            cat build/register/items/index.json \
+              | python -c 'import json, sys; print("\n".join(i[1]["register"] for i in json.load(sys.stdin).items()))' \
+              > output/registers.txt
+            cp -r build output/public
+            cp -r registers/data/nginx/lua output/
+            cp registers/data/nginx/mime.types output/
+            cp registers/data/cloudfoundry/buildpack.yml output/
+            tar -czf ../archive/registers-$(date +%s).tgz -C output .
+  - put: registers
+    params: { file: archive/registers-*.tgz }
 
-  - put: paas-space
-    resource: cf-paas-app
-    params:
-      command: create-space
-      space: ((register-name))
-
-  - put: paas-app
-    resource: cf-paas-app
-    params:
-      command: push
-      space: ((register-name))
-      app_name: app
-      hostname: ((register-name))-app
-      manifest: build/((register-name))/manifest.yml
-      path: build/((register-name))
-
-- name: deploy-route-service
+- name: app
   plan:
-  - get: route-service-git
+  - get: pipelines
+  - get: registers
+    passed: [ build ]
     trigger: true
-
-  - task: run-tests
+    params: { unpack: true }
+  - task: build-manifest
     config:
       platform: linux
-      image_resource:
-        type: docker-image
-        source:
-          repository: golang
-          tag: 1.12-stretch
+      image_resource: *ruby-image
       inputs:
-        - name: route-service-git
+        - name: pipelines
+        - name: registers
+      outputs:
+        - name: registers
       run:
-        dir: route-service-git
-        path: go
-        args: [ "test", "./..." ]
-
-  - put: paas-space
-    resource: cf-paas-rs
+        path: sh
+        args:
+          - -uec
+          - |
+            pipelines/generate_manifest.rb registers/registers.txt registers/manifest.yml
+            cp pipelines/nginx.conf registers/nginx.conf
+  - put: paas-app
     params:
-      command: create-space
-      space: ((register-name))
+      current_app_name: registers
+      manifest: registers/manifest.yml
+      path: registers
 
-  - put: paas-route-service
-    resource: cf-paas-rs
-    params:
-      command: push
-      space: ((register-name))
-      app_name: route-service
-      hostname: ((register-name))-rs
-      manifest: route-service-git/manifest.yaml
-      path: route-service-git
-
-- name: attach-domain
+- name: route-service
   plan:
-  - get: cf-paas-app
-    passed: [ deploy-app ]
-    trigger: true
-
-  - get: cf-paas-rs
-    passed: [ deploy-route-service ]
-    trigger: true
-
-  - put: bind-route-service
-    resource: cf-paas-domain
-    params:
-      commands:
-      - command: create-user-provided-service
-        space: ((register-name))
-        service_instance: route-service-binding
-        route_service_url: https://((register-name))-rs.london.cloudapps.digital
-      - command: bind-route-service
-        space: ((register-name))
-        service_instance: route-service-binding
-        domain: london.cloudapps.digital
-        hostname: ((register-name))-app
-
-- name: conformance-test
-  plan:
-    - get: cf-paas-domain
-      passed: [ attach-domain ]
+    - get: route-service
       trigger: true
-    - get: conformance-test-image
-      trigger: true
-    - task: run-test
-      image: conformance-test-image
+    - task: run-tests
       config:
         platform: linux
+        image_resource: *go-image
+        inputs:
+          - name: route-service
         run:
-          path: /app/openregister-conformance
-          args: [ "--api-version", "1", "--register", "((register-name))", "--register-domain", "((domain))", "https://((register-name))-app.((domain))" ]
+          dir: route-service
+          path: go
+          args: [ "test", "./..." ]
+    - put: paas-route-service
+      params:
+        current_app_name: reg-rs
+        manifest: route-service/manifest.yaml
+        path: route-service
+
+- name: routes
+  plan:
+    - get: registers
+      passed: [ app ]
+      trigger: true
+      params: { unpack: true }
+    - get: paas-route-service
+      passed: [ route-service ]
+    - task: bind-routes
+      config:
+        platform: linux
+        image_resource: *cf-image
+        inputs:
+          - name: registers
+        params:
+          DOMAIN: london.cloudapps.digital
+          PAAS_USER: ((paas-user))
+          PAAS_PASSWORD: ((paas-password))
+        run:
+          path: bash
+          args:
+            - -c
+            - |
+              set -o errexit -o nounset -o pipefail
+              cf login -u "$PAAS_USER" -p "$PAAS_PASSWORD" -a api.london.cloud.service.gov.uk -o gds-registers -s registers
+              cf service route-service || cf create-user-provided-service route-service "https://reg-rs.${DOMAIN}"
+              cat registers/registers.txt | xargs -n1 -IXX cf bind-route-service "${DOMAIN}" --hostname XX-reg route-service
+
+- name: test
+  plan:
+    - get: paas-app
+      passed: [ app ]
+      trigger: true
+    - get: paas-route-service
+      passed: [ routes ]
+      trigger: true
+    - get: conformance-test
+      trigger: true
+    - get: registers
+      passed: [ routes ]
+      trigger: true
+      params: { unpack: true }
+    - task: run-test
+      config:
+        platform: linux
+        image_resource: *python-image
+        inputs:
+          - name: conformance-test
+          - name: registers
+        params:
+          DOMAIN: london.cloudapps.digital
+        run:
+          path: bash
+          dir: conformance-test
+          args:
+            - -c
+            - |
+              set -o errexit -o nounset -o pipefail
+              pip install -r requirements.txt
+              cat ../registers/registers.txt | xargs -n1 -IXX ./openregister-conformance --api-version 1 --register XX --register-domain $DOMAIN https://XX-reg.${DOMAIN}
