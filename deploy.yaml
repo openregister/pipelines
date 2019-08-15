@@ -157,13 +157,15 @@ jobs:
         - name: registers
       outputs:
         - name: registers
+      params:
+        SUBDOMAIN_SUFFIX: -reg
       run:
         path: sh
         args:
           - -uec
           - |
             pipelines/generate_manifest.rb registers/registers.txt registers/manifest.yml
-            cp pipelines/nginx.conf registers/nginx.conf
+            erb pipelines/nginx.conf.erb > registers/nginx.conf
   - put: paas-app
     params:
       current_app_name: registers
