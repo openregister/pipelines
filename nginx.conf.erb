@@ -28,7 +28,7 @@ http {
   }
 
   map $host $register_name {
-    ~^(?<reg>.+)-reg\..+$ $reg;
+    ~^(?<reg>.+)<%= ENV.fetch('SUBDOMAIN_SUFFIX', '') %>\..+$ $reg;
   }
 
   lua_package_path "$prefix/lua/?.lua;/home/vcap/deps/0/nginx/lualib/?.lua;/usr/local/openresty/nginx/lua/?.lua;;";
